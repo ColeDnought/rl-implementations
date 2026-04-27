@@ -2,6 +2,7 @@ from gymnasium import Env
 from torch import nn
 import torch
 from tqdm.auto import trange
+from torch.utils.tensorboard import SummaryWriter
 
 class REINFORCE:
     def __init__(
@@ -65,8 +66,9 @@ class REINFORCE:
             G.insert(0, running)
         return torch.tensor(G, dtype=torch.float32)
 
-    def learn(self, num_episodes = 1000, max_steps = 1000):
+    def learn(self, num_episodes = 1000, max_steps = 1000, reporter = SummaryWriter()):
         steps = trange(num_episodes)
+
         for _ in steps:
             log_probs, rewards, values = self.run_episode(max_steps)
             G = self.returns(rewards)
@@ -80,14 +82,20 @@ class REINFORCE:
                 self.value_optimizer.zero_grad()
                 value_loss.backward()
                 self.value_optimizer.step()
+
+                reporter.add_scalar('Value Loss', value_loss.item(), steps.n)
+                reporter.add_scalar('Average Advantage', advantages.mean().item(), steps.n)
             else:
                 advantages = (G - G.mean()) / (G.std() + 1e-8)
+                reporter.add_scalar('Average Return', G.mean().item(), steps.n)
 
             # -sum( A_t * log policy(a_t|s_t) )
             loss = -torch.stack([lp * a for lp, a in zip(log_probs, advantages)]).sum()
+            reporter.add_scalar('Policy Loss', loss.item(), steps.n)
 
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
 
             steps.set_postfix({'total reward': sum(rewards)})
+            reporter.add_scalar('Episode Reward', sum(rewards), steps.n)
