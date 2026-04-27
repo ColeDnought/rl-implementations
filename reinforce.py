@@ -66,36 +66,46 @@ class REINFORCE:
             G.insert(0, running)
         return torch.tensor(G, dtype=torch.float32)
 
-    def learn(self, num_episodes = 1000, max_steps = 1000, reporter = SummaryWriter()):
+    def learn(self, num_episodes = 1000, max_steps = 1000, reporter = SummaryWriter(), batch_size=1):
         steps = trange(num_episodes)
 
-        for _ in steps:
-            log_probs, rewards, values = self.run_episode(max_steps)
-            G = self.returns(rewards)
+        for episode in steps:
+            all_log_probs, all_G, all_values, all_rewards = [], [], [], []
+
+            for _ in range(batch_size):
+                log_probs, rewards, values = self.run_episode(max_steps)
+                G = self.returns(rewards)
+                all_log_probs.extend(log_probs)
+                all_G.append(G)
+                all_values.extend(values)
+                all_rewards.append(sum(rewards))
+
+            G_cat = torch.cat(all_G)
 
             if self.value_net is not None:
-                V = torch.stack(values)
-                advantages = (G - V.detach())
+                V = torch.stack(all_values)
+                advantages = G_cat - V.detach()
                 advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
-                value_loss = nn.functional.mse_loss(V, G)
+                value_loss = nn.functional.mse_loss(V, G_cat)
                 self.value_optimizer.zero_grad()
                 value_loss.backward()
                 self.value_optimizer.step()
 
-                reporter.add_scalar('Value Loss', value_loss.item(), steps.n)
-                reporter.add_scalar('Average Advantage', advantages.mean().item(), steps.n)
+                reporter.add_scalar('Value Loss', value_loss.item(), episode)
+                reporter.add_scalar('Average Advantage', advantages.mean().item(), episode)
             else:
-                advantages = (G - G.mean()) / (G.std() + 1e-8)
-                reporter.add_scalar('Average Return', G.mean().item(), steps.n)
+                advantages = (G_cat - G_cat.mean()) / (G_cat.std() + 1e-8)
+                reporter.add_scalar('Average Return', G_cat.mean().item(), episode)
 
-            # -sum( A_t * log policy(a_t|s_t) )
-            loss = -torch.stack([lp * a for lp, a in zip(log_probs, advantages)]).sum()
-            reporter.add_scalar('Policy Loss', loss.item(), steps.n)
+            # -mean( A_t * log policy(a_t|s_t) ) across all timesteps in batch
+            loss = -torch.stack([lp * a for lp, a in zip(all_log_probs, advantages)]).mean()
+            reporter.add_scalar('Policy Loss', loss.item(), episode)
 
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
 
-            steps.set_postfix({'total reward': sum(rewards)})
-            reporter.add_scalar('Episode Reward', sum(rewards), steps.n)
+            mean_reward = sum(all_rewards) / batch_size
+            steps.set_postfix({'mean reward': mean_reward})
+            reporter.add_scalar('Episode Reward', mean_reward, episode)
