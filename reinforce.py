@@ -16,13 +16,15 @@ class REINFORCE:
             value_net: nn.Module = None,
             value_lr = 1e-3,
         ):
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.env = env
-        self.policy = policy
+        self.policy = policy.to(self.device)
         self.optimizer = optimizer(self.policy.parameters(), lr=lr)
         self.discount = discount
         self.continuous = continuous_actions
         self.value_net = value_net
         if value_net is not None:
+            self.value_net = value_net.to(self.device)
             self.value_optimizer = optimizer(self.value_net.parameters(), lr=value_lr)
 
     def run_episode(self, max_steps):
@@ -31,7 +33,7 @@ class REINFORCE:
         log_probs, rewards, values = [], [], []
 
         for _ in range(max_steps):
-            obs_tensor = torch.tensor(obs, dtype=torch.float32)
+            obs_tensor = torch.tensor(obs, dtype=torch.float32).to(self.device)
             logits = self.policy(obs_tensor)
             if self.continuous:
                 dist = torch.distributions.Normal(logits, 1.0)  # stddev=1.0 (change ?)
@@ -42,7 +44,7 @@ class REINFORCE:
 
             if self.continuous:
                 log_probs.append(dist.log_prob(action).sum())
-                env_action = action.numpy()
+                env_action = action.cpu().numpy()
             else:
                 log_probs.append(dist.log_prob(action))
                 env_action = action.item()
@@ -64,7 +66,7 @@ class REINFORCE:
         for r in reversed(rewards):
             running = r + self.discount * running
             G.insert(0, running)
-        return torch.tensor(G, dtype=torch.float32)
+        return torch.tensor(G, dtype=torch.float32, device=self.device)
 
     def learn(self, num_episodes = 1000, max_steps = 1000, reporter = SummaryWriter(), batch_size=1):
         steps = trange(num_episodes)
